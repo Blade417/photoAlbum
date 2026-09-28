@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "site": {
+    "name": "星屿",
+    "englishName": "STELLAR MEMORIES",
+    "eyebrow": "A UNIVERSE OF MOMENTS",
+    "titleLine1": "让回忆，",
+    "titleLine2": "自成宇宙。",
+    "description": "那些微小而闪亮的瞬间，\n终将汇成，属于我们的星河。",
+    "exploreLabel": "开始漫游",
+    "introNote": "每一颗星，都是一个故事",
+    "collectionTitle": "拾光集",
+    "footerNote": "SOME MOMENTS ARE FOREVER",
+    "galleryTitle": "所有珍贵，皆有迹可循。",
+    "galleryDescription": "收藏每一个值得被记住的瞬间",
+    "demoGalleryDescription": "一场关于山海与远方的演示旅程"
+  },
+  "memories": {
+    "demo": {},
+    "personal": {}
+  }
+}
