@@ -17,6 +17,7 @@ export type GalaxyHandle = {
   reset: () => void
   zoom: (direction: 1 | -1) => void
   focus: (id: string) => void
+  setRoaming: (enabled: boolean) => void
   beginJourney: () => void
   cancelJourney: () => void
 }
@@ -45,6 +46,7 @@ interface Card {
 }
 
 interface CameraTransition {
+  purpose: 'navigation' | 'roaming'
   fromPosition: THREE.Vector3
   toPosition: THREE.Vector3
   fromTarget: THREE.Vector3
@@ -82,6 +84,7 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
     reset: () => apiRef.current?.reset(),
     zoom: (direction) => apiRef.current?.zoom(direction),
     focus: (id) => apiRef.current?.focus(id),
+    setRoaming: (enabled) => apiRef.current?.setRoaming(enabled),
     beginJourney: () => apiRef.current?.beginJourney(),
     cancelJourney: () => apiRef.current?.cancelJourney(),
   }), [])
@@ -183,6 +186,7 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
       renderer.domElement.dataset.cameraPosition = roundedVector(camera.position)
       renderer.domElement.dataset.cameraTarget = roundedVector(controls.target)
       renderer.domElement.dataset.cameraDistance = camera.position.distanceTo(controls.target).toFixed(4)
+      renderer.domElement.dataset.cameraTransition = transition?.purpose ?? 'none'
       renderer.domElement.dataset.sceneState = propsRef.current.active && !document.hidden ? 'active' : 'paused'
       renderer.domElement.dataset.autoRotate = String(controls.autoRotate)
       renderer.domElement.dataset.reducedMotion = String(reducedMotion)
@@ -534,9 +538,10 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
       wake()
     }
 
-    function startTransition(toPosition: THREE.Vector3, toTarget: THREE.Vector3, duration = 1050) {
+    function startTransition(toPosition: THREE.Vector3, toTarget: THREE.Vector3, duration = 1050, purpose: CameraTransition['purpose'] = 'navigation') {
       cancelJourney()
       transition = {
+        purpose,
         fromPosition: camera.position.clone(),
         toPosition,
         fromTarget: controls.target.clone(),
@@ -548,9 +553,48 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
       wake()
     }
 
+    function setRoaming(enabled: boolean) {
+      // Flush orbit damping without moving the camera when playback is paused.
+      const position = camera.position.clone()
+      const target = controls.target.clone()
+      controls.autoRotate = false
+      controls.enableDamping = false
+      controls.update(0)
+      camera.position.copy(position)
+      controls.target.copy(target)
+      controls.update(0)
+      controls.enableDamping = !reducedMotion
+      if (!enabled) {
+        if (transition?.purpose === 'roaming') transition = null
+        publishCameraState(true)
+        wake()
+        return
+      }
+
+      // A close-up or off-center orbit makes camera-facing cards look static.
+      // Return to a wide orbit while keeping the current viewing direction.
+      const offset = position.clone().sub(target)
+      const needsOverview = Boolean(journey || transition)
+        || target.distanceTo(homeTarget) > 0.5
+        || offset.length() < homePosition.z * 0.9
+      cancelJourney()
+      keys.clear()
+      controls.autoRotateSpeed = 0.35
+      if (needsOverview) {
+        if (offset.lengthSq() < 0.001) offset.copy(homePosition)
+        offset.setLength(Math.max(homePosition.z, offset.length()))
+        startTransition(homeTarget.clone().add(offset), homeTarget.clone(), 1600, 'roaming')
+      } else {
+        // An explicit start should respond immediately, without the idle delay.
+        interactionAt = performance.now() - 1601
+        wake()
+      }
+    }
+
     apiRef.current = {
       beginJourney,
       cancelJourney,
+      setRoaming,
       reset: () => startTransition(homePosition.clone(), homeTarget.clone(), 1250),
       zoom: (direction) => {
         const offset = camera.position.clone().sub(controls.target)
@@ -580,7 +624,7 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
       elapsed += delta
       // App initializes this preference from reduced-motion. An explicit later
       // opt-in still permits roaming while decorative movement remains disabled.
-      controls.autoRotate = propsRef.current.autoRotate && !journey && !transition && !keys.size && time - interactionAt > 1600
+      controls.autoRotate = propsRef.current.autoRotate && !journey && !transition && !keys.size && !dragging && time - interactionAt > 1600
       if (journey) {
         const progress = Math.min(1, Math.max(0, (time - journey.startedAt) / journey.duration))
         // Quintic easing has no velocity or acceleration jump at either end.

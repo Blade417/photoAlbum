@@ -35,6 +35,11 @@ export default function App() {
   const [toast, setToast] = useState('');
   const [focusTarget, setFocusTarget] = useState<string | null>(null);
   const galaxy = useRef<GalaxyHandle>(null);
+  const toggleAutoRotate = useCallback(() => {
+    const enabled = !autoRotate;
+    setAutoRotate(enabled); setShowArrival(false); setFocusTarget(null);
+    galaxy.current?.setRoaming(enabled);
+  }, [autoRotate]);
 
   useEffect(() => {
     let cancelled = false;
@@ -64,13 +69,13 @@ export default function App() {
     const handle = (event: KeyboardEvent) => {
       if (selectedId || help || editor) return;
       if (event.key === 'Escape') { galaxy.current?.cancelJourney(); setShowArrival(false); setImmersive(false); return; }
-      if (event.target instanceof HTMLElement && (event.target.isContentEditable || /INPUT|TEXTAREA|SELECT|BUTTON|VIDEO|A/.test(event.target.tagName))) return;
-      if (event.code === 'Space' && view === 'galaxy') { event.preventDefault(); setAutoRotate(value => !value); }
+      if (event.target instanceof HTMLElement && (event.target.isContentEditable || /^(INPUT|TEXTAREA|SELECT|BUTTON|VIDEO|A)$/.test(event.target.tagName))) return;
+      if (event.code === 'Space' && view === 'galaxy') { event.preventDefault(); if (!event.repeat) toggleAutoRotate(); }
       if (/^[wasdqe]$/i.test(event.key) || event.key.startsWith('Arrow')) setShowArrival(false);
     };
     window.addEventListener('keydown', handle);
     return () => window.removeEventListener('keydown', handle);
-  }, [selectedId, help, editor, view]);
+  }, [selectedId, help, editor, view, toggleAutoRotate]);
 
   const items = useMemo(() => manifest?.items.map(item => ({ ...item, ...content.memories[manifest.isDemo ? 'demo' : 'personal'][item.id] })) ?? [], [manifest, content]);
   const filtered = useMemo(() => items.filter(item => filter === 'all' || item.type === filter), [items, filter]);
@@ -135,7 +140,7 @@ export default function App() {
       <aside className="view-controls ui-layer" aria-label="视角控制"><button className="icon-button" aria-label="拉近" title="拉近" onClick={() => galaxy.current?.zoom(1)}><Plus size={19}/></button><span/><button className="icon-button" aria-label="拉远" title="拉远" onClick={() => galaxy.current?.zoom(-1)}><Minus size={19}/></button><div className="control-separator"/><button className="icon-button" aria-label="重置视角" title="重置视角 · R" onClick={reset}><RotateCcw size={17}/></button><button className="icon-button" aria-label={fullscreen ? '退出全屏' : '全屏浏览'} title="全屏浏览" onClick={toggleFullscreen}>{fullscreen ? <Minimize size={17}/> : <Maximize size={17}/>}</button></aside>
       <section className="memory-dock ui-layer" aria-label="回忆导航">
         <div className="dock-heading"><div className="dock-title"><span className="four-star">✦</span><span>{content.site.collectionTitle}</span><small>THE COLLECTION</small>{manifest?.isDemo && <span className="demo-badge">演示</span>}</div><button className="text-button" onClick={() => setView('grid')}>查看全部 <ArrowRight size={14}/></button></div>
-        <div className="dock-body"><div className="dock-summary"><strong>{String(items.length).padStart(2, '0')}<span> / {manifest?.capacity ?? 99}</span></strong><div><ImageIcon size={11}/>{photos}<span/><Film size={11}/>{videos}</div></div><button className="strip-arrow icon-button" aria-label="上一组回忆" onClick={() => setStripPage(value => (value - 1 + pageCount) % pageCount)} disabled={pageCount < 2}><ChevronLeft size={17}/></button><div className="thumbnail-strip">{stripItems.map(item => <button key={item.id} className="strip-thumbnail" onClick={() => setSelectedId(item.id)} aria-label={`查看${item.type === 'video' ? '视频' : '照片'}：${item.title}`}><Thumbnail item={item} eager/><span className="thumbnail-index">{String(item.index).padStart(2, '0')}</span></button>)}{!stripItems.length && <p className="strip-empty">这里还没有{filter === 'video' ? '视频' : '照片'}</p>}</div><button className="strip-arrow icon-button" aria-label="下一组回忆" onClick={() => setStripPage(value => (value + 1) % pageCount)} disabled={pageCount < 2}><ChevronRight size={17}/></button><div className="dock-auto"><button className={autoRotate ? 'auto-button active' : 'auto-button'} onClick={() => setAutoRotate(value => !value)} aria-label={autoRotate ? '暂停自动漫游' : '开启自动漫游'} aria-pressed={autoRotate}>{autoRotate ? <Pause size={15}/> : <Play size={15}/>}</button><span>自动漫游</span></div></div>
+        <div className="dock-body"><div className="dock-summary"><strong>{String(items.length).padStart(2, '0')}<span> / {manifest?.capacity ?? 99}</span></strong><div><ImageIcon size={11}/>{photos}<span/><Film size={11}/>{videos}</div></div><button className="strip-arrow icon-button" aria-label="上一组回忆" onClick={() => setStripPage(value => (value - 1 + pageCount) % pageCount)} disabled={pageCount < 2}><ChevronLeft size={17}/></button><div className="thumbnail-strip">{stripItems.map(item => <button key={item.id} className="strip-thumbnail" onClick={() => setSelectedId(item.id)} aria-label={`查看${item.type === 'video' ? '视频' : '照片'}：${item.title}`}><Thumbnail item={item} eager/><span className="thumbnail-index">{String(item.index).padStart(2, '0')}</span></button>)}{!stripItems.length && <p className="strip-empty">这里还没有{filter === 'video' ? '视频' : '照片'}</p>}</div><button className="strip-arrow icon-button" aria-label="下一组回忆" onClick={() => setStripPage(value => (value + 1) % pageCount)} disabled={pageCount < 2}><ChevronRight size={17}/></button><div className="dock-auto"><button className={autoRotate ? 'auto-button active' : 'auto-button'} onClick={toggleAutoRotate} aria-label={autoRotate ? '暂停自动漫游' : '开启自动漫游'} aria-pressed={autoRotate}>{autoRotate ? <Pause size={15}/> : <Play size={15}/>}</button><span>自动漫游</span></div></div>
       </section>
       <footer className="footer ui-layer"><div className="gesture-hints"><span><MousePointer2 size={13}/>拖动旋转</span><i/><span><Move size={13}/>滚轮缩放</span><i/><span>点击，走近一段回忆</span></div><span className="footer-note">{content.site.footerNote} <span>✦</span></span></footer>
       {filter !== 'all' && <button className="floating-filter ui-layer" onClick={() => changeFilter('all')}>仅看{filter === 'video' ? '视频' : '照片'} <X size={12}/></button>}
