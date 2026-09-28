@@ -3,6 +3,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import type { MediaItem } from '../lib/media'
 import { AlbumVideoPool, type AlbumVideo } from '../lib/videoTextures'
+import { findJourneyView } from '../lib/journey'
 import {
   AlbumTexturePool,
   createGalaxyPositions,
@@ -29,7 +30,7 @@ interface GalaxySceneProps {
   onSelect: (item: MediaItem) => void
   onReady: () => void
   onError: (message: string) => void
-  onJourneyChange?: (state: JourneyState) => void
+  onJourneyChange?: (state: JourneyState, targetId: string | null) => void
 }
 
 interface Card {
@@ -71,6 +72,8 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
   const propsRef = useRef(props)
   propsRef.current = props
   const apiRef = useRef<GalaxyHandle | null>(null)
+  // Keep the previous stop across resets and category changes.
+  const lastJourneyTarget = useRef<string | null>(null)
   const wakeRef = useRef<(() => void) | null>(null)
   // Editing captions should preserve the camera, loaded textures and playback.
   const assetSignature = JSON.stringify(props.items.map(({ id, type, src, thumbnail }) => [id, type, src, thumbnail]))
@@ -141,6 +144,7 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
     let elapsed = 0
     let transition: CameraTransition | null = null
     let journey: CameraJourney | null = null
+    let journeyTargetId: string | null = null
     let hovered: Card | null = null
     let pointerDown: { x: number; y: number; time: number; id: number; moved: boolean } | null = null
     let dragging = false
@@ -320,6 +324,8 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
     const positionsForCards = createGalaxyPositions(items.length)
     const cards: Card[] = []
     const cardsById = new Map<string, Card>()
+    const nearPhotoColor = new THREE.Color('#f3f3f3')
+    const distantPhotoColor = new THREE.Color('#77818c')
     const raycastMeshes: THREE.Mesh[] = []
     const raycaster = new THREE.Raycaster()
     const pointer = new THREE.Vector2()
@@ -437,7 +443,7 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
 
     function publishJourney(state: JourneyState) {
       renderer.domElement.dataset.journeyState = state
-      if (!disposed) propsRef.current.onJourneyChange?.(state)
+      if (!disposed) propsRef.current.onJourneyChange?.(state, journeyTargetId)
     }
 
     function restoreJourneyAtmosphere() {
@@ -469,7 +475,15 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
     }
 
     function beginJourney() {
-      if (journey || disposed || !propsRef.current.active || document.hidden) return
+      if (journey || disposed || !cards.length || !propsRef.current.active || document.hidden) return
+      // Draw from the current category, excluding only the previous stop when
+      // there is a choice. Scene layout stays seeded; each journey is fresh.
+      const candidates = cards.length > 1
+        ? cards.filter(card => card.item.id !== lastJourneyTarget.current)
+        : cards
+      const destinationCard = candidates[Math.floor(Math.random() * candidates.length)]!
+      journeyTargetId = destinationCard.item.id
+      lastJourneyTarget.current = journeyTargetId
       transition = null
       keys.clear()
       renderer.domElement.focus({ preventScroll: true })
@@ -478,16 +492,20 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
       controls.enableDamping = false
       controls.update(0)
       controls.enableDamping = !reducedMotion
-      const firstCard = cards[0]
-      const destination = firstCard?.group.position.clone() ?? new THREE.Vector3(1.5, 0.7, 16)
+      const destination = destinationCard.group.position.clone()
       const fieldOfView = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))
-      const imageWidth = firstCard?.width ?? 6.6
-      const imageHeight = firstCard?.height ?? 4.4
-      // Keep the first memory within its constellation, including portrait screens.
+      const imageWidth = destinationCard.width
+      const imageHeight = destinationCard.height
+      // Frame the chosen memory comfortably, including portrait screens.
       const widthFraction = camera.aspect < 1 ? 0.48 : 0.34
       const distance = Math.max(14, imageWidth / (fieldOfView * camera.aspect * widthFraction), imageHeight / (fieldOfView * 0.43))
-      const endPosition = destination.clone().add(new THREE.Vector3(0.65, 1.25, distance))
-      const endTarget = destination.clone().add(new THREE.Vector3(0, 0.35, -6))
+      const { position: endPosition, target: endTarget } = findJourneyView(
+        destination,
+        destination.clone().add(new THREE.Vector3(0.65, 1.25, distance)),
+        destination.clone().add(new THREE.Vector3(0, 0.35, -6)),
+        cards.map(card => ({ position: card.group.position, width: card.width, height: card.height, roll: card.roll })),
+        cards.indexOf(destinationCard),
+      )
       const startPosition = camera.position.clone()
       const startTarget = controls.target.clone()
       const arcScale = Math.min(1.35, Math.max(0.75, startPosition.distanceTo(endPosition) / 18))
@@ -509,6 +527,8 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
       }
       interactionAt = performance.now()
       renderer.domElement.dataset.journeyProgress = '0'
+      renderer.domElement.dataset.journeyTargetId = journeyTargetId
+      renderer.domElement.dataset.journeyTargetPosition = JSON.stringify(destination.toArray())
       publishJourney('flying')
       if (reducedMotion) finishJourney()
       wake()
@@ -600,6 +620,11 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
       starMaterial.uniforms.uTime!.value = reducedMotion ? 0 : elapsed
       cards.forEach((card, index) => {
         card.group.position.y = card.baseY + (reducedMotion ? 0 : Math.sin(elapsed * 0.25 + index * 1.3) * 0.13)
+        if (index >= 16 && card.item.type === 'image') {
+          // Distant photos regain their detail as a random journey approaches.
+          const proximity = 1 - THREE.MathUtils.smoothstep(camera.position.distanceTo(card.group.position), 24, 48)
+          card.mesh.material.color.copy(distantPhotoColor).lerp(nearPhotoColor, proximity)
+        }
         card.group.quaternion.copy(camera.quaternion)
         card.group.rotateZ(card.roll + (reducedMotion ? 0 : Math.sin(elapsed * 0.17 + index) * 0.01))
         const scale = hovered === card ? 1.045 : 1
