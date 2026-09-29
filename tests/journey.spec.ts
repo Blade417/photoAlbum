@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from './fixtures';
 import { PerspectiveCamera, Vector3 } from 'three';
 import { createDemoManifest } from '../scripts/media-manifest.mjs';
 import { DEFAULT_CONTENT } from '../shared/album-content.mjs';
@@ -220,7 +220,8 @@ test('video category selects a video, opens that memory, and avoids repeating it
   await page.getByRole('button', { name: '相册总览', exact: true }).click();
   await page.getByRole('button', { name: '视频 11', exact: true }).click();
   await page.getByRole('button', { name: '星空漫游', exact: true }).click();
-  await expect(scene(page)).toHaveAttribute('data-card-count', '11');
+  await expect(scene(page)).toHaveAttribute('data-card-count', '99');
+  await expect(scene(page)).toHaveAttribute('data-highlight-count', '11');
   await page.evaluate(() => { Math.random = () => 0.99; });
   const videos = createDemoManifest().items.filter(item => item.type === 'video');
   await page.getByRole('button', { name: '开始漫游', exact: true }).click();

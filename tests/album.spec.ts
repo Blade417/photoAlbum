@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from './fixtures';
 import { createDemoManifest } from '../scripts/media-manifest.mjs';
 import { DEFAULT_CONTENT } from '../shared/album-content.mjs';
 
@@ -36,7 +36,7 @@ test('desktop loads 99 memories and image viewer supports next and Escape', asyn
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await openGalaxy(page);
-  await expect(page.locator('.dock-summary')).toContainText('99 / 99');
+  await expect(page.locator('.dock-summary')).toContainText('99 个瞬间');
   await expect(page.locator('.strip-thumbnail')).toHaveCount(8);
   await expect.poll(() => page.locator('.strip-thumbnail img').evaluateAll(images => images.every(image => (image as HTMLImageElement).naturalWidth > 0))).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('desktop-galaxy.png') });

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_CONTENT, validateContent } from '../shared/album-content.mjs';
 
-export const MAX_CONTENT_BYTES = 1024 * 1024;
+export const MAX_CONTENT_BYTES = 8 * 1024 * 1024;
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pendingWrites = new Map();
 
@@ -84,7 +84,7 @@ function readBody(request) {
     const fail = (message, status) => { cleanup(); request.resume(); reject(Object.assign(new Error(message), { status })); };
     const onData = (chunk) => {
       size += chunk.length;
-      if (size > MAX_CONTENT_BYTES) { fail('文案配置不能超过 1 MB。', 413); return; }
+      if (size > MAX_CONTENT_BYTES) { fail('文案配置不能超过 8 MB。', 413); return; }
       chunks.push(chunk);
     };
     const onEnd = () => { cleanup(); resolve(Buffer.concat(chunks).toString('utf8')); };
@@ -113,7 +113,7 @@ export function createContentMiddleware({ filename, base = '/' }) {
     }
     if (request.method !== 'PUT') { response.setHeader('Allow', 'GET, PUT'); json(response, 405, { error: '此接口只支持 GET 和 PUT。' }); return; }
     if (!/^application\/json(?:\s*;|\s*$)/i.test(request.headers['content-type'] ?? '')) { json(response, 415, { error: '请使用 application/json 提交文案。' }); request.resume(); return; }
-    if (Number(request.headers['content-length']) > MAX_CONTENT_BYTES) { json(response, 413, { error: '文案配置不能超过 1 MB。' }); request.resume(); return; }
+    if (Number(request.headers['content-length']) > MAX_CONTENT_BYTES) { json(response, 413, { error: '文案配置不能超过 8 MB。' }); request.resume(); return; }
     let content;
     try { content = validateContent(JSON.parse(await readBody(request))); }
     catch (error) { if (!response.destroyed) json(response, error.status ?? 400, { error: error instanceof SyntaxError ? '文案配置不是有效的 JSON。' : error.message }); return; }

@@ -75,18 +75,23 @@ test('initialization preserves customized and malformed content byte for byte', 
 
 test('schema rejects invalid versions, unknown keys, prototypes, boundaries and overlong text', () => {
   const cases = [
-    (c) => { c.version = 2; },
+    (c) => { c.version = 3; },
     (c) => { c.extra = true; },
     (c) => { delete c.site.name; },
     (c) => { c.site.name = '  '; },
     (c) => { c.site.name = 'x'.repeat(SITE_LIMITS.name + 1); },
     (c) => { c.site.description = '\u0000'; },
     (c) => { c.memories.demo['memory-000'] = { title: '', subtitle: '' }; },
-    (c) => { c.memories.personal['memory-100'] = { title: '', subtitle: '' }; },
+    (c) => { c.memories.personal['memory-0100'] = { title: '', subtitle: '' }; },
     (c) => { c.memories.personal['memory-1'] = { title: '', subtitle: '' }; },
+    (c) => { c.memories.personal['memory-1234567'] = { title: '', subtitle: '' }; },
     (c) => { c.memories.personal['memory-001'] = { title: 'x'.repeat(81), subtitle: '' }; },
     (c) => { c.memories.personal['memory-001'] = { title: '', subtitle: 'x'.repeat(241) }; },
     (c) => { c.memories.personal['memory-001'] = { title: '', subtitle: '', src: 'file.txt' }; },
+    (c) => { c.memories.personal['memory-001'] = { title: '', subtitle: '', date: '2023-02-30' }; },
+    (c) => { c.memories.personal['memory-001'] = { title: '', subtitle: '', date: '2023/06/01' }; },
+    (c) => { c.memories.personal['memory-001'] = { title: '', subtitle: '', date: '' }; },
+    (c) => { c.version = 1; c.memories.personal['memory-001'] = { title: '', subtitle: '', date: '2023-06-01' }; },
     (c) => { c.memories.personal.constructor = { title: '', subtitle: '' }; },
     (c) => { c.memories.personal = JSON.parse('{"__proto__":{"title":"bad","subtitle":"bad"}}'); },
     (c) => { c.site = Object.assign(Object.create({ inherited: 'value' }), c.site); },
@@ -96,13 +101,29 @@ test('schema rejects invalid versions, unknown keys, prototypes, boundaries and 
   assert.equal({}.polluted, undefined);
 });
 
+test('version 1 files upgrade, and version 2 adds optional dates for any number of memories', () => {
+  const legacy = { ...validateContent(DEFAULT_CONTENT), version: 1 };
+  legacy.memories.personal['memory-001'] = { title: '旧文案', subtitle: '保持不变' };
+  const upgraded = validateContent(legacy);
+  assert.equal(upgraded.version, 2);
+  assert.deepEqual(upgraded.memories.personal['memory-001'], { title: '旧文案', subtitle: '保持不变' });
+  const many = validateContent(DEFAULT_CONTENT);
+  for (let index = 1; index <= 1500; index++) {
+    many.memories.personal[`memory-${String(index).padStart(3, '0')}`] = { title: `第 ${index} 段`, subtitle: '', ...(index % 2 ? { date: '2024-02-29' } : {}) };
+  }
+  const validated = validateContent(many);
+  assert.equal(Object.keys(validated.memories.personal).length, 1500);
+  assert.deepEqual(validated.memories.personal['memory-1499'], { title: '第 1499 段', subtitle: '', date: '2024-02-29' });
+  assert.deepEqual(validated.memories.personal['memory-1500'], { title: '第 1500 段', subtitle: '' });
+});
+
 test('atomic saves replace complete documents, preserve valid data after rejected edits, and clean temporary files', async () => {
   await fixture(async ({ filename, directory }) => {
     const content = validateContent(DEFAULT_CONTENT);
     content.site.name = '家庭相册';
     content.memories.personal['memory-001'] = { title: '生日', subtitle: '一起吹蜡烛' };
     await saveContentFile(filename, content);
-    await assert.rejects(saveContentFile(filename, { ...content, version: 2 }));
+    await assert.rejects(saveContentFile(filename, { ...content, version: 3 }));
     assert.deepEqual(JSON.parse(await readFile(filename, 'utf8')), content);
     await Promise.all(Array.from({ length: 6 }, (_, i) => saveContentFile(filename, { ...content, site: { ...content.site, name: `相册${i}` } })));
     const saved = JSON.parse(await readFile(filename, 'utf8'));
@@ -165,7 +186,7 @@ test('API rejects cross-origin, LAN and hostile Host requests without changing t
 test('API rejects invalid JSON, schema, content type, oversized fixed and chunked bodies', async () => {
   await fixture(async ({ send, filename }) => {
     assert.equal((await send({ method: 'PUT', raw: '{' })).status, 400);
-    assert.equal((await send({ method: 'PUT', value: { ...DEFAULT_CONTENT, version: 2 } })).status, 400);
+    assert.equal((await send({ method: 'PUT', value: { ...DEFAULT_CONTENT, version: 3 } })).status, 400);
     assert.equal((await send({ method: 'PUT', value: DEFAULT_CONTENT, headers: { 'Content-Type': 'text/plain' } })).status, 415);
     const tooLarge = JSON.stringify({ overflow: 'x'.repeat(MAX_CONTENT_BYTES) });
     assert.equal((await send({ method: 'PUT', raw: tooLarge })).status, 413);

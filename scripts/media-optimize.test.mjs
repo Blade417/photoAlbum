@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import ffmpeg from 'ffmpeg-static';
 import { generateMediaManifest, mediaManifestPlugin } from './media-manifest.mjs';
+import { normalizeCaptureTime } from './media-optimize.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -132,6 +133,53 @@ test('FFmpeg produces a bounded silent 24fps video preview with a generated post
     assert.ok(poster.width <= 384 && poster.height <= 384);
     assert.ok((await stat(absolute(item.previewSrc))).size < (await stat(source)).size / 2);
     assert.equal(await digest(source), originalDigest);
+  });
+});
+
+test('capture times keep the recorded wall clock and reject unset or impossible values', () => {
+  assert.equal(normalizeCaptureTime('2023-06-01T16:30:00+0800'), '2023-06-01T16:30:00+08:00');
+  assert.equal(normalizeCaptureTime('2023-06-01T08:30:00.000000Z'), '2023-06-01T08:30:00Z');
+  assert.equal(normalizeCaptureTime('2023-06-01T16:30:00'), '2023-06-01T16:30:00');
+  assert.equal(normalizeCaptureTime('1970-01-01T00:00:00.000000Z', 1971), undefined);
+  assert.equal(normalizeCaptureTime('1904-01-01T00:00:00Z', 1971), undefined);
+  assert.equal(normalizeCaptureTime('2023-02-30T10:00:00'), undefined);
+  assert.equal(normalizeCaptureTime('2023-06-01T24:00:00'), undefined);
+  assert.equal(normalizeCaptureTime(`${new Date().getFullYear() + 2}-01-01T00:00:00`), undefined);
+  assert.equal(normalizeCaptureTime('not a date'), undefined);
+});
+
+test('photo EXIF, video metadata and preview colours are read once and cached', async () => {
+  await fixture(async ({ root, media, options, summaries, warnings }) => {
+    await sharp({ create: { width: 640, height: 480, channels: 3, background: '#c86432' } })
+      .withExif({ IFD2: { DateTimeOriginal: '2023:06:01 16:30:00', OffsetTimeOriginal: '+08:00' } })
+      .jpeg().toFile(path.join(media, 'memory-001.jpg'));
+    await sharp({ create: { width: 320, height: 240, channels: 3, background: '#2d6cb4' } })
+      .withExif({ IFD2: { DateTimeOriginal: '2021:12:24 20:05:09' } })
+      .jpeg().toFile(path.join(media, 'memory-002.jpg'));
+    await image(path.join(media, 'memory-003.jpg'), 200, 120, '#808080');
+    const tagged = spawnSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-i', path.join(projectRoot, 'public', 'demo', 'flower.mp4'),
+      '-t', '1', '-c', 'copy', '-metadata', 'creation_time=2019-08-15T02:03:04.000000Z', path.join(media, 'memory-120.mp4')], {
+      windowsHide: true, encoding: 'utf8', timeout: 30000,
+    });
+    assert.equal(tagged.status, 0, tagged.stderr);
+    const { items } = await generateMediaManifest(root, options);
+    assert.deepEqual(warnings, []);
+    assert.deepEqual(items.map((item) => item.id), ['memory-001', 'memory-002', 'memory-003', 'memory-120']);
+    assert.deepEqual(items.map((item) => item.takenAt), ['2023-06-01T16:30:00+08:00', '2021-12-24T20:05:09', undefined, '2019-08-15T02:03:04Z']);
+    const channel = (hex, offset) => parseInt(hex.slice(offset, offset + 2), 16);
+    const near = (hex, expected) => [1, 3, 5].every((offset) => Math.abs(channel(hex, offset) - channel(expected, offset)) <= 16);
+    assert.ok(near(items[0].color, '#c86432'), items[0].color);
+    assert.ok(near(items[1].color, '#2d6cb4'), items[1].color);
+    assert.ok(items.every((item) => /^#[0-9a-f]{6}$/.test(item.color)));
+
+    // Details from an older metadata version are re-read without re-encoding previews.
+    const cachePath = path.join(root, 'public', 'media-previews', '.cache.json');
+    const cache = JSON.parse(await readFile(cachePath, 'utf8'));
+    assert.ok(Object.values(cache.entries).every((entry) => entry.details.version === 1));
+    for (const entry of Object.values(cache.entries)) delete entry.details;
+    await writeFile(cachePath, JSON.stringify(cache));
+    assert.deepEqual((await generateMediaManifest(root, options)).items, items);
+    assert.deepEqual(summaries.at(-1), { created: 0, cached: 4, failed: 0 });
   });
 });
 

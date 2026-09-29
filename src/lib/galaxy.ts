@@ -38,8 +38,19 @@ const foreground = [
   [-0.8, 15.7, -14, 4.7, 0.06],
 ] as const
 
+export const FEATURED_COUNT = foreground.length
+export const GALAXY_AXIS_X = 3
+export const GALAXY_FLATTENING = 0.48
+// The original composition held 83 spiral memories within this depth.
+const SPIRAL_REFERENCE = 83
+const SPIRAL_DEPTH = 54
+
+/** Newest memories take the hand-placed foreground; older ones recede along the arms. */
 export function createGalaxyPositions(count: number): GalaxyPosition[] {
   const random = seededRandom()
+  const spiralCount = Math.max(1, count - foreground.length)
+  // Larger albums keep the original spacing and reach further back instead of crowding.
+  const stretch = Math.max(1, spiralCount / SPIRAL_REFERENCE)
   return Array.from({ length: count }, (_, index) => {
     const featured = foreground[index]
     if (featured) {
@@ -47,22 +58,40 @@ export function createGalaxyPositions(count: number): GalaxyPosition[] {
       return { x, y, z, width, roll }
     }
     const arm = index % 3
-    const fraction = (index - foreground.length) / Math.max(1, count - foreground.length)
-    const radius = 18 + Math.sqrt(fraction) * 43 + random() * 5
-    const angle = arm * ((Math.PI * 2) / 3) + fraction * 3.8 + random() * 0.38
+    const reach = (index - foreground.length) / spiralCount * stretch
+    const radius = 18 + Math.sqrt(Math.min(1, reach)) * 43 + random() * 5
+    const angle = arm * ((Math.PI * 2) / 3) + reach * 3.8 + random() * 0.38
     let x = Math.cos(angle) * radius
-    let y = Math.sin(angle) * radius * 0.48 + (random() - 0.5) * 7
+    let y = Math.sin(angle) * radius * GALAXY_FLATTENING + (random() - 0.5) * 7
     // Leave room for the introductory copy in the initial view.
     if (x < -17 && y > 2) y = -8 - random() * 15
-    x += 3
+    x += GALAXY_AXIS_X
     return {
       x,
       y,
-      z: -32 - random() * 54,
+      // Distance is time: the further a memory, the longer ago it happened.
+      z: -32 - reach * SPIRAL_DEPTH - random() * 8,
       width: 2.8 + random() * 1.44,
       roll: (random() - 0.5) * 0.16,
     }
   })
+}
+
+export function makeLabelTexture(label: string) {
+  const canvas = document.createElement('canvas')
+  canvas.width = 256
+  canvas.height = 96
+  const context = canvas.getContext('2d')!
+  context.font = '300 58px Georgia, "Times New Roman", serif'
+  context.textAlign = 'center'
+  context.textBaseline = 'middle'
+  context.shadowColor = 'rgba(213,187,146,0.55)'
+  context.shadowBlur = 14
+  context.fillStyle = 'rgba(226,208,176,0.92)'
+  context.fillText(label, 128, 50)
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  return texture
 }
 
 export function makeGlowTexture() {
@@ -147,6 +176,7 @@ interface LoadedTexture {
 export class AlbumTexturePool {
   private cache = new Map<string, Promise<LoadedTexture>>()
   private textures = new Set<THREE.Texture>()
+  private resident = new Map<string, THREE.Texture>()
   private queue: Array<() => void> = []
   private cancellations = new Set<() => void>()
   private running = 0
@@ -207,6 +237,7 @@ export class AlbumTexturePool {
             texture.colorSpace = THREE.SRGBColorSpace
             texture.anisotropy = this.anisotropy
             this.textures.add(texture)
+            this.resident.set(src, texture)
             resolve({ texture, aspect })
           } catch (error) {
             reject(error)
@@ -226,6 +257,20 @@ export class AlbumTexturePool {
     return promise
   }
 
+  get residentCount() {
+    return this.resident.size
+  }
+
+  /** Free a decoded preview's GPU memory; loading it again decodes a fresh copy. */
+  evict(src: string) {
+    const texture = this.resident.get(src)
+    if (!texture) return
+    this.resident.delete(src)
+    this.textures.delete(texture)
+    this.cache.delete(src)
+    texture.dispose()
+  }
+
   private flush() {
     while (!this.disposed && this.running < this.concurrency && this.queue.length) this.queue.shift()!()
   }
@@ -237,6 +282,7 @@ export class AlbumTexturePool {
     this.cancellations.clear()
     this.textures.forEach((texture) => texture.dispose())
     this.textures.clear()
+    this.resident.clear()
     this.cache.clear()
   }
 }

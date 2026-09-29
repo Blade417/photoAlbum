@@ -7,6 +7,12 @@ export interface MediaItem {
   previewSrc?: string;
   displaySrc?: string;
   aspect?: number;
+  /** Recorded capture time: local wall clock, optionally with a zone. */
+  takenAt?: string;
+  /** Representative #rrggbb colour of the preview. */
+  color?: string;
+  /** Owner-provided YYYY-MM-DD date that replaces takenAt. */
+  date?: string;
   title: string;
   subtitle: string;
   demo?: boolean;
@@ -15,12 +21,11 @@ export interface MediaItem {
 export interface MediaManifest {
   items: MediaItem[];
   isDemo: boolean;
-  capacity: number;
   /** A recoverable load error, if the bundled demonstration is being used. */
   warning?: string;
 }
 
-const capacity = 99;
+const demoCount = 99;
 const demoScenes = [
   ['alpine.jpg', '山的另一边', '山野 · 远行的记忆'],
   ['stillwater.jpg', '湖泊的来信', '湖畔 · 时间静止的一刻'],
@@ -52,10 +57,9 @@ function withAssetUrls(item: MediaItem): MediaItem {
 
 function fallbackManifest(): MediaManifest {
   return {
-    capacity,
     isDemo: true,
     warning: '素材清单暂时无法读取，已展示内置演示。请检查部署时是否包含 media-manifest.json。',
-    items: Array.from({ length: capacity }, (_, offset): MediaItem => {
+    items: Array.from({ length: demoCount }, (_, offset): MediaItem => {
       const index = offset + 1;
       const [file, title, subtitle] = demoScenes[offset % demoScenes.length];
       const video = index % 9 === 0;
@@ -77,14 +81,16 @@ function isMediaItem(value: unknown): value is MediaItem {
   if (!value || typeof value !== 'object') return false;
   const item = value as Partial<MediaItem>;
   return typeof item.id === 'string'
-    && Number.isInteger(item.index) && Number(item.index) >= 1 && Number(item.index) <= capacity
+    && Number.isInteger(item.index) && Number(item.index) >= 1
     && (item.type === 'image' || item.type === 'video')
     && typeof item.src === 'string' && item.src.length > 0
     && typeof item.title === 'string' && typeof item.subtitle === 'string'
     && (item.thumbnail === undefined || typeof item.thumbnail === 'string')
     && (item.previewSrc === undefined || typeof item.previewSrc === 'string')
     && (item.displaySrc === undefined || typeof item.displaySrc === 'string')
-    && (item.aspect === undefined || (Number.isFinite(item.aspect) && item.aspect > 0));
+    && (item.aspect === undefined || (Number.isFinite(item.aspect) && item.aspect > 0))
+    && (item.takenAt === undefined || (typeof item.takenAt === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})?$/.test(item.takenAt)))
+    && (item.color === undefined || (typeof item.color === 'string' && /^#[0-9a-f]{6}$/i.test(item.color)));
 }
 
 export async function loadMedia(): Promise<MediaManifest> {
@@ -100,12 +106,11 @@ export async function loadMedia(): Promise<MediaManifest> {
       if (seen.has(item.index)) return false;
       seen.add(item.index);
       return true;
-    }).sort((left, right) => left.index - right.index).slice(0, capacity).map(withAssetUrls);
+    }).sort((left, right) => left.index - right.index).map(withAssetUrls);
     if (!items.length) throw new Error('The media manifest contains no usable items');
     return {
       items,
       isDemo: 'isDemo' in manifest && manifest.isDemo === true,
-      capacity,
     };
   } catch (error) {
     console.warn('[media] Falling back to bundled demo:', error);

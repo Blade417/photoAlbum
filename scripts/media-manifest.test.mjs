@@ -42,12 +42,18 @@ test('duplicate resolution prefers padded names, then the documented extension o
   assert.equal(warnings.length, 2);
 });
 
-test('capacity includes 1 and 99, excludes 0 and 100, and never fills missing slots', async () => {
-  const { manifest, warnings } = await scanFiles(['memory-000.jpg', 'memory-001.avif', 'memory-099.ogg', 'memory-100.gif']);
-  assert.deepEqual(manifest.items.map((item) => item.index), [1, 99]);
-  assert.equal(manifest.capacity, 99);
-  assert.equal(manifest.items.length, 2);
-  assert.equal(warnings.length, 2);
+test('numbering starts at 1, has no 99-memory ceiling, and never fills missing slots', async () => {
+  const { manifest, warnings } = await scanFiles(['memory-000.jpg', 'memory-001.avif', 'memory-099.ogg', 'memory-100.gif', 'memory-1200.webp', 'memory-23456.jpg']);
+  assert.deepEqual(manifest.items.map((item) => item.index), [1, 99, 100, 1200, 23456]);
+  assert.deepEqual(manifest.items.map((item) => item.id), ['memory-001', 'memory-099', 'memory-100', 'memory-1200', 'memory-23456']);
+  assert.equal(manifest.capacity, undefined);
+  assert.equal(warnings.length, 1);
+});
+
+test('canonical names win for numbers of any length', async () => {
+  const { manifest, warnings } = await scanFiles(['memory-0100.jpg', 'memory-100.png', 'memory-01200.mp4', 'memory-1200.jpg', 'memory-7.jpg', 'memory-007.png']);
+  assert.deepEqual(manifest.items.map((item) => item.src), ['media/memory-007.png', 'media/memory-100.png', 'media/memory-1200.jpg']);
+  assert.equal(warnings.length, 3);
 });
 
 test('an empty directory provides 99 demo memories from a small shared local asset set', async () => {
@@ -58,4 +64,5 @@ test('an empty directory provides 99 demo memories from a small shared local ass
   assert.equal(manifest.items.filter((item) => item.type === 'video').length, 11);
   assert.ok(new Set(manifest.items.map((item) => item.src)).size <= 13);
   assert.ok(manifest.items.every((item) => item.demo));
+  assert.ok(manifest.items.every((item) => /^#[0-9a-f]{6}$/.test(item.color) && item.takenAt === undefined));
 });

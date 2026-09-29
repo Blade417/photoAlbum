@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from './fixtures';
 import { createDemoManifest } from '../scripts/media-manifest.mjs';
 import { DEFAULT_CONTENT, validateContent, type AlbumContent } from '../shared/album-content.mjs';
 

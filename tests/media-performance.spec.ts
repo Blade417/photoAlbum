@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from './fixtures';
 import path from 'node:path';
 import { DEFAULT_CONTENT } from '../shared/album-content.mjs';
 
@@ -7,7 +7,6 @@ test.use({ reducedMotion: 'reduce' });
 
 function fixtureManifest(optimized = true) {
   return {
-    capacity: 99,
     isDemo: false,
     items: Array.from({ length: 16 }, (_, offset) => {
       const index = offset + 1;
