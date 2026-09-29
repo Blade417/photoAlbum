@@ -8,3 +8,10 @@ playwright-report/
 .env.*
 !.env.example
 *.log
+
+# Personal originals, generated previews, and local album content stay local.
+/public/media/*
+!/public/media/.gitkeep
+/public/media-previews/
+/public/media-manifest.json
+/public/album-content.json

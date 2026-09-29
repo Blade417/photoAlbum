@@ -143,7 +143,7 @@ interface LoadedTexture {
   aspect: number
 }
 
-/** At most four full-resolution images are decoded at a time. */
+/** Decode only a bounded number of previews; cap the textures uploaded to the GPU. */
 export class AlbumTexturePool {
   private cache = new Map<string, Promise<LoadedTexture>>()
   private textures = new Set<THREE.Texture>()
@@ -152,7 +152,7 @@ export class AlbumTexturePool {
   private running = 0
   private disposed = false
 
-  constructor(private readonly anisotropy: number) {}
+  constructor(private readonly anisotropy: number, private readonly maxEdge = 768, private readonly concurrency = 4) {}
 
   load(src: string): Promise<LoadedTexture> {
     const cached = this.cache.get(src)
@@ -175,6 +175,10 @@ export class AlbumTexturePool {
         this.running += 1
         const finish = () => {
           settled = true
+          if (image) {
+            image.onload = image.onerror = null
+            image.src = ''
+          }
           this.running -= 1
           this.cancellations.delete(cancel)
           this.flush()
@@ -186,7 +190,7 @@ export class AlbumTexturePool {
           if (this.disposed) return
           try {
             const aspect = image!.naturalWidth / image!.naturalHeight
-            const scale = Math.min(1, 768 / Math.max(image!.naturalWidth, image!.naturalHeight))
+            const scale = Math.min(1, this.maxEdge / Math.max(image!.naturalWidth, image!.naturalHeight))
             const canvas = document.createElement('canvas')
             canvas.width = Math.max(1, Math.round(image!.naturalWidth * scale))
             canvas.height = Math.max(1, Math.round(image!.naturalHeight * scale))
@@ -223,7 +227,7 @@ export class AlbumTexturePool {
   }
 
   private flush() {
-    while (!this.disposed && this.running < 4 && this.queue.length) this.queue.shift()!()
+    while (!this.disposed && this.running < this.concurrency && this.queue.length) this.queue.shift()!()
   }
 
   dispose() {

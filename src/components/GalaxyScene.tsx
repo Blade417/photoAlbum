@@ -43,6 +43,7 @@ interface Card {
   width: number
   height: number
   video?: AlbumVideo
+  loadPoster?: () => void
 }
 
 interface CameraTransition {
@@ -78,7 +79,7 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
   const lastJourneyTarget = useRef<string | null>(null)
   const wakeRef = useRef<(() => void) | null>(null)
   // Editing captions should preserve the camera, loaded textures and playback.
-  const assetSignature = JSON.stringify(props.items.map(({ id, type, src, thumbnail }) => [id, type, src, thumbnail]))
+  const assetSignature = JSON.stringify(props.items.map(({ id, type, src, thumbnail, previewSrc, aspect }) => [id, type, src, thumbnail, previewSrc, aspect]))
 
   useImperativeHandle(ref, () => ({
     reset: () => apiRef.current?.reset(),
@@ -159,7 +160,8 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
     const geometries = new Set<THREE.BufferGeometry>()
     const materials = new Set<THREE.Material>()
     const textures = new Set<THREE.Texture>()
-    const pool = new AlbumTexturePool(Math.min(4, renderer.capabilities.getMaxAnisotropy()))
+    const mobileViewport = container.clientWidth < 650
+    const pool = new AlbumTexturePool(Math.min(4, renderer.capabilities.getMaxAnisotropy()), mobileViewport ? 512 : 768, mobileViewport ? 2 : 4)
     const videoPool = new AlbumVideoPool(container, () => {
       videoPool.publishState(renderer.domElement)
       wake()
@@ -353,7 +355,7 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
       group.add(mesh)
       let videoBadge: THREE.Sprite | undefined
       let posterTexture: THREE.Texture = item.type === 'video' ? videoPlaceholder : imagePlaceholder
-      let posterAspect = 1.5
+      let posterAspect = item.aspect || 1.5
       const fitCard = (aspect: number) => {
         // Keep a similar footprint for portraits and landscapes without cropping.
         card.width = position.width * Math.sqrt(Math.min(2, Math.max(0.45, aspect)) / 1.5)
@@ -364,6 +366,7 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
         }
         mesh.scale.set(card.width, card.height, 1)
       }
+      fitCard(posterAspect)
       if (item.type === 'video') {
         const playMaterial = new THREE.SpriteMaterial({ map: playTexture, transparent: true, depthWrite: false })
         const play = new THREE.Sprite(playMaterial)
@@ -373,7 +376,7 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
         group.add(play)
         materials.add(playMaterial)
         videoBadge = play
-        card.video = videoPool.register(item.src, (entry) => {
+        card.video = videoPool.register(item.previewSrc || item.src, (entry) => {
           if (disposed) return
           const live = entry.ready && entry.hasPlayed && !entry.failed
           const nextTexture = live ? entry.texture : posterTexture
@@ -393,21 +396,24 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
       cardsById.set(item.id, card)
       raycastMeshes.push(mesh)
       materials.add(material)
-      const source = item.thumbnail || (item.type === 'image' ? item.src : undefined)
+      const source = item.type === 'image' ? item.previewSrc || item.thumbnail || item.src : item.thumbnail
       if (source) {
-        pool.load(source).then(({ texture, aspect }) => {
-          if (disposed) return
-          posterTexture = texture
-          posterAspect = aspect
-          if (!card.video?.hasPlayed || card.video.failed) {
-            material.map = texture
-            material.needsUpdate = true
-            fitCard(aspect)
-          }
-          renderOnce()
-        }).catch(() => {
-          // Individual missing or unsupported media keep a selectable placeholder.
-        })
+        card.loadPoster = () => {
+          card.loadPoster = undefined
+          pool.load(source).then(({ texture, aspect }) => {
+            if (disposed) return
+            posterTexture = texture
+            posterAspect = aspect
+            if (!card.video?.hasPlayed || card.video.failed) {
+              material.map = texture
+              material.needsUpdate = true
+              fitCard(aspect)
+            }
+            renderOnce()
+          }).catch(() => {
+            // Individual missing or unsupported media keep a selectable placeholder.
+          }).finally(() => { if (!disposed) wake() })
+        }
       }
     })
 
@@ -422,22 +428,29 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
       cameraProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
       videoFrustum.setFromProjectionMatrix(cameraProjection)
       const visible = new Map<string, number>()
+      const posters: Card[] = []
       let visibleCards = 0
       cards.forEach((card) => {
-        if (!card.video || card.video.failed) return
         cardBounds.center.copy(card.group.position)
         cardBounds.radius = Math.hypot(card.width, card.height) * 0.55
         if (!videoFrustum.intersectsSphere(cardBounds)) return
+        if (card.loadPoster) posters.push(card)
+        if (!card.video || card.video.failed) return
         visibleCards += 1
         const distance = camera.position.distanceTo(card.group.position) * (card.video.wanted ? 0.9 : 1)
-        visible.set(card.item.src, Math.min(distance, visible.get(card.item.src) ?? Infinity))
+        const source = card.item.previewSrc || card.item.src
+        visible.set(source, Math.min(distance, visible.get(source) ?? Infinity))
       })
+      // Load visible previews first; distant/offscreen originals are never prefetched.
+      posters.sort((a, b) => camera.position.distanceToSquared(a.group.position) - camera.position.distanceToSquared(b.group.position))
+      posters.slice(0, 8).forEach(card => card.loadPoster?.())
       // Limit simultaneous decoders, not the number of visible repeated cards.
-      const nearestSources = [...visible].sort((left, right) => left[1] - right[1]).slice(0, 10).map(([src]) => src)
+      const concurrencyLimit = renderer.domElement.clientWidth < 650 ? 2 : 4
+      const nearestSources = [...visible].sort((left, right) => left[1] - right[1]).slice(0, concurrencyLimit).map(([src]) => src)
       videoPool.setVisible(new Set(nearestSources))
       renderer.domElement.dataset.videoVisibleCards = String(visibleCards)
       renderer.domElement.dataset.videoPlayingCards = String(cards.filter(({ video }) => video && video.ready && !video.failed && !video.video.paused).length)
-      renderer.domElement.dataset.videoConcurrencyLimit = '10'
+      renderer.domElement.dataset.videoConcurrencyLimit = String(concurrencyLimit)
       videoPool.publishState(renderer.domElement)
     }
 
@@ -486,6 +499,7 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
         ? cards.filter(card => card.item.id !== lastJourneyTarget.current)
         : cards
       const destinationCard = candidates[Math.floor(Math.random() * candidates.length)]!
+      destinationCard.loadPoster?.()
       journeyTargetId = destinationCard.item.id
       lastJourneyTarget.current = journeyTargetId
       transition = null
@@ -605,6 +619,7 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
         cancelJourney()
         const card = cardsById.get(id)
         if (!card) return
+        card.loadPoster?.()
         const target = card.group.position.clone()
         const direction = camera.position.clone().sub(target).normalize()
         const fitDistance = Math.max(card.height, card.width / camera.aspect) / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) * 1.6

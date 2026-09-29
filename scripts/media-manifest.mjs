@@ -1,7 +1,8 @@
-import { readdir, readFile, mkdir, writeFile } from 'node:fs/promises';
+import { readdir, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { demoScenes, demoVideo } from './demo-scenes.mjs';
+import { atomicWriteIfChanged, optimizeMediaManifest } from './media-optimize.mjs';
 
 export const MEDIA_CAPACITY = 99;
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -9,6 +10,13 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const extensions = ['mp4', 'webm', 'ogg', 'jpg', 'jpeg', 'png', 'webp', 'avif', 'gif'];
 const videoExtensions = new Set(['mp4', 'webm', 'ogg']);
 const posterExtensions = ['jpg', 'jpeg', 'png', 'webp', 'avif'];
+const pendingGenerations = new Map();
+const demoAspect = {
+  'alpine.jpg': 960 / 640, 'stillwater.jpg': 960 / 640, 'forest.jpg': 960 / 639,
+  'horizon.jpg': 960 / 638, 'starlight.jpg': 960 / 641, 'wander.jpg': 960 / 1440,
+  'waterfall.jpg': 960 / 1440, 'wildlife.jpg': 960 / 1585, 'lakeside.jpg': 960 / 640,
+  'ocean.jpg': 960 / 640, 'meadow.jpg': 960 / 636, 'blossom.jpg': 960 / 640,
+};
 
 export function createDemoManifest() {
   return {
@@ -22,6 +30,7 @@ export function createDemoManifest() {
         id: `memory-${String(index).padStart(3, '0')}`,
         index,
         type: video ? 'video' : 'image',
+        aspect: video ? 960 / 540 : demoAspect[scene.file],
         src: `demo/${video ? demoVideo.file : scene.file}`,
         thumbnail: `demo/${video ? 'blossom.jpg' : scene.file}`,
         title: video ? demoVideo.title : scene.title,
@@ -83,18 +92,27 @@ export async function scanMediaDirectory(mediaDirectory, { onWarning = console.w
   return { items, isDemo: false, capacity: MEDIA_CAPACITY };
 }
 
-export async function generateMediaManifest(root = projectRoot, options) {
-  const manifest = await scanMediaDirectory(path.join(root, 'public', 'media'), options);
-  const destination = path.join(root, 'public', 'media-manifest.json');
-  const content = `${JSON.stringify(manifest, null, 2)}\n`;
-  const previous = await readFile(destination, 'utf8').catch(() => '');
-  if (previous !== content) await writeFile(destination, content, 'utf8');
-  return manifest;
+export function generateMediaManifest(root = projectRoot, options = {}) {
+  const resolved = path.resolve(root);
+  const previous = pendingGenerations.get(resolved) ?? Promise.resolve();
+  const pending = previous.catch(() => {}).then(async () => {
+    const scanned = await scanMediaDirectory(path.join(resolved, 'public', 'media'), options);
+    const manifest = await optimizeMediaManifest(resolved, scanned, options);
+    const destination = path.join(resolved, 'public', 'media-manifest.json');
+    await atomicWriteIfChanged(destination, `${JSON.stringify(manifest, null, 2)}\n`);
+    return manifest;
+  });
+  pendingGenerations.set(resolved, pending);
+  void pending.finally(() => { if (pendingGenerations.get(resolved) === pending) pendingGenerations.delete(resolved); }).catch(() => {});
+  return pending;
 }
 
 export function mediaManifestPlugin() {
   let root = projectRoot;
   let pendingUpdate;
+  let refreshing = false;
+  let refreshRequested = false;
+  let closed = false;
   return {
     name: 'memory-media-manifest',
     configResolved(config) { root = config.root; },
@@ -103,21 +121,34 @@ export function mediaManifestPlugin() {
       await generateMediaManifest(root);
       const mediaDirectory = path.resolve(root, 'public', 'media');
       server.watcher.add(mediaDirectory);
-      const onFileChange = (_event, file) => {
-        const relative = path.relative(mediaDirectory, path.resolve(file));
-        if (relative.startsWith('..') || path.isAbsolute(relative)) return;
-        clearTimeout(pendingUpdate);
-        pendingUpdate = setTimeout(async () => {
-          try {
+      const refresh = async () => {
+        refreshRequested = true;
+        if (refreshing || closed) return;
+        refreshing = true;
+        try {
+          while (refreshRequested && !closed) {
+            refreshRequested = false;
             await generateMediaManifest(root);
-            server.ws.send({ type: 'full-reload', path: '*' });
-          } catch (error) {
-            server.config.logger.error(`[media] Cannot refresh media manifest: ${error.message}`);
           }
-        }, 200);
+          if (!closed) server.ws.send({ type: 'full-reload', path: '*' });
+        } catch (error) {
+          server.config.logger.error(`[media] Cannot refresh media manifest: ${error.message}`);
+        } finally {
+          refreshing = false;
+        }
+      };
+      const onFileChange = (_event, file) => {
+        const changedFile = path.resolve(file);
+        // Generated files live in a sibling directory; they must not trigger a new
+        // encode/reload cycle. Ignore temporary copy files and unrelated documents.
+        if (path.dirname(changedFile) !== mediaDirectory
+          || !/^memory-\d{1,3}(?:\.poster)?\.(jpg|jpeg|png|webp|avif|gif|mp4|webm|ogg)$/i.test(path.basename(changedFile))) return;
+        clearTimeout(pendingUpdate);
+        pendingUpdate = setTimeout(refresh, 750);
       };
       server.watcher.on('all', onFileChange);
       server.httpServer?.once('close', () => {
+        closed = true;
         clearTimeout(pendingUpdate);
         server.watcher.off('all', onFileChange);
       });

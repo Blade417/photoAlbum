@@ -4,6 +4,9 @@ export interface MediaItem {
   type: 'image' | 'video';
   src: string;
   thumbnail?: string;
+  previewSrc?: string;
+  displaySrc?: string;
+  aspect?: number;
   title: string;
   subtitle: string;
   demo?: boolean;
@@ -42,6 +45,8 @@ function withAssetUrls(item: MediaItem): MediaItem {
     ...item,
     src: assetUrl(item.src),
     ...(item.thumbnail ? { thumbnail: assetUrl(item.thumbnail) } : {}),
+    ...(item.previewSrc ? { previewSrc: assetUrl(item.previewSrc) } : {}),
+    ...(item.displaySrc ? { displaySrc: assetUrl(item.displaySrc) } : {}),
   };
 }
 
@@ -76,7 +81,10 @@ function isMediaItem(value: unknown): value is MediaItem {
     && (item.type === 'image' || item.type === 'video')
     && typeof item.src === 'string' && item.src.length > 0
     && typeof item.title === 'string' && typeof item.subtitle === 'string'
-    && (item.thumbnail === undefined || typeof item.thumbnail === 'string');
+    && (item.thumbnail === undefined || typeof item.thumbnail === 'string')
+    && (item.previewSrc === undefined || typeof item.previewSrc === 'string')
+    && (item.displaySrc === undefined || typeof item.displaySrc === 'string')
+    && (item.aspect === undefined || (Number.isFinite(item.aspect) && item.aspect > 0));
 }
 
 export async function loadMedia(): Promise<MediaManifest> {

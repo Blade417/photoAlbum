@@ -5,7 +5,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { DEFAULT_CONTENT, SITE_LIMITS, validateContent } from '../shared/album-content.mjs';
-import { createContentMiddleware, contentStorePlugin, MAX_CONTENT_BYTES, saveContentFile } from './content-store.mjs';
+import { createContentMiddleware, contentStorePlugin, initializeContentFile, MAX_CONTENT_BYTES, saveContentFile } from './content-store.mjs';
 
 async function fixture(run, options = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'photo-album-content-test-'));
@@ -48,6 +48,29 @@ test('shared defaults validate to an independent copy and accept intentional emp
   copy.memories.personal['memory-099'] = { title: '', subtitle: '' };
   assert.equal(DEFAULT_CONTENT.site.name, '星屿');
   assert.deepEqual(validateContent(copy), copy);
+});
+
+test('clean checkout initialization creates missing directories and defaults without racing other initializers', async () => {
+  await fixture(async ({ directory }) => {
+    const filename = path.join(directory, 'public', 'album-content.json');
+    const created = await Promise.all(Array.from({ length: 4 }, () => initializeContentFile(filename)));
+    assert.equal(created.filter(Boolean).length, 1);
+    assert.deepEqual(JSON.parse(await readFile(filename, 'utf8')), DEFAULT_CONTENT);
+  });
+});
+
+test('initialization preserves customized and malformed content byte for byte', async () => {
+  await fixture(async ({ filename }) => {
+    const custom = validateContent(DEFAULT_CONTENT);
+    custom.site.name = '我的回忆';
+    custom.memories.personal['memory-001'] = { title: '我们的旅行', subtitle: '原始文案' };
+    for (const content of [`${JSON.stringify(custom, null, '\t')}\r\n`, '{ "unfinished": ', '']) {
+      await writeFile(filename, content);
+      const before = await readFile(filename);
+      assert.equal(await initializeContentFile(filename), false);
+      assert.deepEqual(await readFile(filename), before);
+    }
+  });
 });
 
 test('schema rejects invalid versions, unknown keys, prototypes, boundaries and overlong text', () => {
@@ -162,14 +185,21 @@ test('filesystem failures are explicit errors instead of claiming a successful s
   }, { filename: (directory) => path.join(directory, 'blocked', 'album-content.json') });
 });
 
-test('plugin prevents content saves and their temporary files from reloading the editor', () => {
-  const plugin = contentStorePlugin();
-  const root = path.resolve(os.tmpdir(), 'photo-album-plugin-config');
-  const publicDir = path.join(root, 'public');
-  const ignore = plugin.config().server.watch.ignored[0];
-  plugin.configResolved({ root, publicDir, base: '/' });
-  assert.equal(ignore(path.join(publicDir, 'album-content.json')), true);
-  assert.equal(ignore(path.join(publicDir, '.album-content.json.random.tmp')), true);
-  assert.equal(ignore(path.join(publicDir, 'media', 'memory-001.jpg')), false);
-  assert.equal(ignore(path.join(root, 'src', 'App.tsx')), false);
+test('plugin creates defaults before dev/build and ignores editor saves without overwriting existing files', async () => {
+  await fixture(async ({ directory: root }) => {
+    const plugin = contentStorePlugin();
+    const publicDir = path.join(root, 'public');
+    const filename = path.join(publicDir, 'album-content.json');
+    const ignore = plugin.config().server.watch.ignored[0];
+    await plugin.configResolved({ root, publicDir, base: '/' });
+    assert.deepEqual(JSON.parse(await readFile(filename, 'utf8')), DEFAULT_CONTENT);
+    assert.equal(ignore(filename), true);
+    assert.equal(ignore(path.join(publicDir, '.album-content.json.random.tmp')), true);
+    assert.equal(ignore(path.join(publicDir, 'media', 'memory-001.jpg')), false);
+    assert.equal(ignore(path.join(root, 'src', 'App.tsx')), false);
+    const existing = Buffer.from('{ "user edit in progress" ');
+    await writeFile(filename, existing);
+    await plugin.configResolved({ root, publicDir, base: '/' });
+    assert.deepEqual(await readFile(filename), existing);
+  });
 });

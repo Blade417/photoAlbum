@@ -9,6 +9,18 @@ export const MAX_CONTENT_BYTES = 1024 * 1024;
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pendingWrites = new Map();
 
+export async function initializeContentFile(filename) {
+  await mkdir(path.dirname(path.resolve(filename)), { recursive: true });
+  try {
+    // Bootstrap clean checkouts only. Existing content, even malformed JSON, belongs to the user.
+    await writeFile(filename, `${JSON.stringify(DEFAULT_CONTENT, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+    return true;
+  } catch (error) {
+    if (error.code === 'EEXIST') return false;
+    throw error;
+  }
+}
+
 async function replaceFile(source, destination) {
   for (let attempt = 0; ; attempt += 1) {
     try { await rename(source, destination); return; }
@@ -124,7 +136,12 @@ export function contentStorePlugin() {
           && path.basename(resolved).startsWith(`.${path.basename(filename)}.`) && resolved.endsWith('.tmp'));
       }] } } };
     },
-    configResolved(config) { filename = path.join(config.publicDir || path.join(config.root, 'public'), 'album-content.json'); base = config.base; },
+    async configResolved(config) {
+      filename = path.join(config.publicDir || path.join(config.root, 'public'), 'album-content.json');
+      base = config.base;
+      // Run before dev starts and before Vite copies public assets for regular or watched builds.
+      await initializeContentFile(filename);
+    },
     configureServer(server) { server.middlewares.use(createContentMiddleware({ filename, base })); },
   };
 }
