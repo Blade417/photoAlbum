@@ -8,6 +8,30 @@ playwright-report/
 .env.*
 !.env.example
 *.log
+.history/
+.idea/
+.vscode/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.bak
+*.backup
+*.dump
+*.sql
+*.pem
+*.key
+*.p12
+*.pfx
+backups/
+backup/
+logs/
+data/
+/local/
+/private/
+*.bundle
 
 # Personal originals, generated previews, and local album content stay local.
 /public/media/*
