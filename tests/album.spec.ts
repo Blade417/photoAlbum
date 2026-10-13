@@ -150,6 +150,22 @@ test('zoom buttons, drag, wheel and W move the real camera, and reset restores h
   await expect.poll(() => distance(canvas)).toBeLessThan(47.1);
 });
 
+test('shooting stars cross the breathing sky, and stay away with reduced motion', async ({ page }) => {
+  const shaderErrors: string[] = [];
+  page.on('console', message => { if (message.type() === 'error' && /shader|program/i.test(message.text())) shaderErrors.push(message.text()); });
+  await openGalaxy(page);
+  await stopRoaming(page);
+  await expect.poll(async () => Number(await scene(page).getAttribute('data-meteor-count')), { timeout: 15_000 }).toBeGreaterThan(0);
+  expect(shaderErrors).toEqual([]);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await openGalaxy(page);
+  // Roaming keeps the scene rendering well past the first meteor's usual arrival.
+  await page.getByRole('button', { name: '开启自动漫游', exact: true }).click();
+  await expect(scene(page)).toHaveAttribute('data-auto-rotate', 'true');
+  await page.waitForTimeout(5000);
+  await expect(scene(page)).toHaveAttribute('data-meteor-count', '0');
+});
+
 test.describe('mobile touch viewport', () => {
   test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 1 });
   test('fits phone viewport, opens a photo, and touch swipe rotates the camera', async ({ page }, testInfo) => {

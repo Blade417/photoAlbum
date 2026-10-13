@@ -4,6 +4,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import type { MediaItem } from '../lib/media'
 import { AlbumVideoPool, type AlbumVideo } from '../lib/videoTextures'
 import { findJourneyView } from '../lib/journey'
+import { MeteorShower } from '../lib/meteors'
 import { memoryMoment } from '../lib/timeline'
 import {
   AlbumTexturePool,
@@ -292,6 +293,8 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
     renderer.domElement.dataset.starCount = String(dustCount + skyCount)
     renderer.domElement.dataset.brightStarCount = String(brightStarCount)
     const palette = ['#fff2cc', '#bddffb', '#edc987', '#d5c8f7', '#edfaff'].map((color) => new THREE.Color(color))
+    // A separate stream keeps the constellation itself unchanged.
+    const twinkleRandom = seededRandom(1618)
     function makeStars(count: number, brightCount: number, place: (index: number, target: Float32Array) => void) {
       const geometry = new THREE.BufferGeometry()
       const positions = new Float32Array(count * 3)
@@ -299,6 +302,8 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
       const sizes = new Float32Array(count)
       const phases = new Float32Array(count)
       const sparks = new Float32Array(count)
+      const rates = new Float32Array(count)
+      const glints = new Float32Array(count)
       for (let i = 0; i < count; i += 1) {
         place(i, positions)
         const color = palette[Math.floor(random() * palette.length)]!
@@ -307,12 +312,16 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
         sizes[i] = bright ? 10 + random() * 15 : random() < 0.05 ? 2.4 + random() * 1.5 : 0.5 + random() * 1.3
         phases[i] = random() * Math.PI * 2
         sparks[i] = bright ? 1 : 0
+        rates[i] = 0.7 + twinkleRandom() * 1.1
+        glints[i] = twinkleRandom() < 0.06 ? 1 : 0
       }
       geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
       geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
       geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1))
       geometry.setAttribute('aPhase', new THREE.BufferAttribute(phases, 1))
       geometry.setAttribute('aSpark', new THREE.BufferAttribute(sparks, 1))
+      geometry.setAttribute('aRate', new THREE.BufferAttribute(rates, 1))
+      geometry.setAttribute('aGlint', new THREE.BufferAttribute(glints, 1))
       geometries.add(geometry)
       return geometry
     }
@@ -337,18 +346,25 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
         attribute float aSize;
         attribute float aPhase;
         attribute float aSpark;
+        attribute float aRate;
+        attribute float aGlint;
         varying vec3 vColor;
         varying float vBrightness;
         varying float vSpark;
+        varying float vBreath;
         uniform float uTime;
         uniform float uPixelRatio;
         uniform float uJourney;
         void main() {
           vColor = color;
           vSpark = aSpark;
-          vBrightness = (0.8 + 0.2 * sin(uTime * 0.55 + aPhase)) * (1.0 + uJourney * 0.28);
+          // Every star breathes at its own pace; a few also glint for a moment now and then.
+          vBreath = 0.5 + 0.5 * sin(uTime * aRate + aPhase);
+          float glint = aGlint * pow(max(0.0, sin(uTime * aRate * 0.45 + aPhase * 7.0)), 64.0);
+          vBrightness = (0.45 + 0.6 * vBreath + 1.6 * glint) * (1.0 + uJourney * 0.28);
           vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-          gl_PointSize = clamp(aSize * uPixelRatio * (100.0 / max(10.0, -mvPosition.z)), 0.65, mix(7.5, 44.0, aSpark) * uPixelRatio);
+          float size = aSize * (0.8 + 0.35 * vBreath + 0.9 * glint);
+          gl_PointSize = clamp(size * uPixelRatio * (100.0 / max(10.0, -mvPosition.z)), 0.65, mix(7.5, 44.0, aSpark) * (1.0 + 0.5 * glint) * uPixelRatio);
           gl_Position = projectionMatrix * mvPosition;
         }
       `,
@@ -356,6 +372,7 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
         varying vec3 vColor;
         varying float vBrightness;
         varying float vSpark;
+        varying float vBreath;
         void main() {
           vec2 p = gl_PointCoord - vec2(0.5);
           float radius = length(p);
@@ -363,8 +380,10 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
           if (vSpark > 0.5) {
             float core = exp(-radius * 44.0);
             float halo = exp(-radius * 9.0) * 0.13;
-            float vertical = exp(-abs(p.x) * 100.0) * pow(max(0.0, 1.0 - abs(p.y) * 2.0), 2.5);
-            float horizontal = exp(-abs(p.y) * 100.0) * pow(max(0.0, 1.0 - abs(p.x) * 2.0), 2.5);
+            // The rays reach further as the star breathes in.
+            float reach = mix(3.6, 1.8, vBreath);
+            float vertical = exp(-abs(p.x) * 100.0) * pow(max(0.0, 1.0 - abs(p.y) * 2.0), reach);
+            float horizontal = exp(-abs(p.y) * 100.0) * pow(max(0.0, 1.0 - abs(p.x) * 2.0), reach);
             alpha = (core + halo + (vertical + horizontal) * 0.68) * vBrightness;
           }
           gl_FragColor = vec4(vColor, alpha);
@@ -385,6 +404,9 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
 
     const glowTexture = makeGlowTexture()
     textures.add(glowTexture)
+    const meteors = new MeteorShower(glowTexture)
+    scene.add(meteors.group)
+    renderer.domElement.dataset.meteorCount = '0'
     // Nebulae, year rings and labels belong to the universe and appear as the sphere bursts.
     const galaxyDecor: Array<{ material: THREE.Material; opacity: number }> = []
     function addNebula(position: THREE.Vector3Tuple, scale: [number, number], color: THREE.ColorRepresentation, opacity: number, rotation: number) {
@@ -1077,6 +1099,10 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
       }
       controls.update(delta)
       sky.position.copy(camera.position)
+      // Shooting stars wait out flights and the burst, and never appear with reduced motion.
+      if (meteors.update(camera, elapsed, !reducedMotion && !journey && !transition && burstStartedAt === null)) {
+        renderer.domElement.dataset.meteorCount = String(meteors.launched)
+      }
       starMaterial.uniforms.uTime!.value = reducedMotion ? 0 : elapsed
       const lod = lodRange()
       memoryStarMaterial.uniforms.uTime!.value = reducedMotion ? 0 : elapsed
@@ -1205,6 +1231,7 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
     const onMotionChange = () => {
       reducedMotion = motionQuery.matches
       controls.enableDamping = !reducedMotion
+      if (reducedMotion) meteors.clear()
       wake()
     }
     const onContextLost = (event: Event) => {
@@ -1281,6 +1308,7 @@ export const GalaxyScene = forwardRef<GalaxyHandle, GalaxySceneProps>(function G
       controls.dispose()
       videoPool.dispose()
       pool.dispose()
+      meteors.dispose()
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('blur', onBlur)
